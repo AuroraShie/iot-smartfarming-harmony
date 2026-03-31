@@ -1,4 +1,4 @@
-#include "network_module.h"
+﻿#include "network_module.h"
 
 #include <limits.h>
 #include <time.h>
@@ -24,7 +24,8 @@ NetworkManager::NetworkManager()
       lastHeartbeatMs(0),
       lastTelemetryPublishMs(0),
       messageSequence(0),
-      serverHandle(NULL) {
+      serverHandle(NULL),
+      commandHandler(NULL) {
     config.ssid = WIFI_SSID;
     config.password = WIFI_PASSWORD;
     config.gatewayId = GATEWAY_ID;
@@ -48,7 +49,6 @@ NetworkManager::NetworkManager()
     actuatorState.pumpOn = false;
     actuatorState.growLightOn = false;
     actuatorState.growLightLevel = 0;
-    actuatorState.pumpAutoOffAtMs = 0;
 
     for (int i = 0; i < MAX_COMMAND_HISTORY; ++i) {
         commandHistory[i].used = false;
@@ -57,20 +57,20 @@ NetworkManager::NetworkManager()
 }
 
 void NetworkManager::begin() {
-    Serial.println("Starting gateway network module...");
+    Serial.println("启动本地网关网络模块...");
     bootTimeMs = millis();
     status = NET_CONNECTING;
     configureTime();
 
     if (!connectWiFi()) {
         status = NET_DISCONNECTED;
-        Serial.println("Wi-Fi is not ready. The gateway will retry in background.");
+        Serial.println("Wi-Fi 未就绪，网关将在后台自动重试。");
         return;
     }
 
     if (!startServer()) {
         status = NET_ERROR;
-        Serial.println("Failed to start the local gateway server.");
+        Serial.println("本地网关服务启动失败。");
         return;
     }
 
@@ -84,11 +84,10 @@ void NetworkManager::begin() {
 
 void NetworkManager::update() {
     const unsigned long nowMs = millis();
-    processAutoControl();
 
     if (WiFi.status() != WL_CONNECTED) {
         if (status == NET_CONNECTED) {
-            Serial.println("Wi-Fi connection lost, stopping gateway server.");
+            Serial.println("Wi-Fi 已断开，停止本地网关服务。");
             stopServer();
             status = NET_DISCONNECTED;
         }
@@ -108,7 +107,7 @@ void NetworkManager::update() {
         if (connectWiFi() && startServer()) {
             status = NET_CONNECTED;
             refreshHeartbeat(true);
-            Serial.println("Gateway network recovered.");
+            Serial.println("本地网关网络已恢复。");
         } else {
             status = NET_DISCONNECTED;
         }
@@ -121,6 +120,33 @@ void NetworkManager::update() {
 
 NetworkStatus NetworkManager::getStatus() const {
     return status;
+}
+
+String NetworkManager::getLocalIp() const {
+    if (WiFi.status() != WL_CONNECTED) {
+        return String();
+    }
+    return WiFi.localIP().toString();
+}
+
+int NetworkManager::getGatewayPort() const {
+    return config.gatewayPort;
+}
+
+String NetworkManager::getWebSocketPath() const {
+    return config.wsPath;
+}
+
+bool NetworkManager::isWebSocketEnabled() const {
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool NetworkManager::isGatewayServing() const {
+    return status == NET_CONNECTED && isServerRunning();
 }
 
 bool NetworkManager::sendSensorData(const SensorData& data) {
@@ -164,6 +190,31 @@ void NetworkManager::reconnect() {
     begin();
 }
 
+void NetworkManager::setCommandHandler(DeviceCommandHandler handler) {
+    commandHandler = handler;
+}
+
+void NetworkManager::updateActuatorState(bool pumpOn, bool growLightOn, int growLightLevel) {
+    const bool pumpChanged = actuatorState.pumpOn != pumpOn;
+    const bool growLightChanged = actuatorState.growLightOn != growLightOn
+        || actuatorState.growLightLevel != growLightLevel;
+
+    actuatorState.pumpOn = pumpOn;
+    actuatorState.growLightOn = growLightOn;
+    actuatorState.growLightLevel = growLightLevel;
+
+    if (status != NET_CONNECTED) {
+        return;
+    }
+
+    if (pumpChanged) {
+        publishDeviceStatusChanged(PUMP_DEVICE_ID);
+    }
+    if (growLightChanged) {
+        publishDeviceStatusChanged(GROW_LIGHT_DEVICE_ID);
+    }
+}
+
 void NetworkManager::configureTime() {
     configTime(0, 0, NTP_SERVER_1, NTP_SERVER_2);
 }
@@ -173,7 +224,7 @@ bool NetworkManager::connectWiFi() {
         return true;
     }
 
-    Serial.print("Connecting to Wi-Fi SSID: ");
+    Serial.print("正在连接 Wi-Fi: ");
     Serial.println(config.ssid);
 
     WiFi.mode(WIFI_STA);
@@ -187,11 +238,11 @@ bool NetworkManager::connectWiFi() {
     Serial.println();
 
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("Wi-Fi connection failed.");
+        Serial.println("Wi-Fi 连接失败。");
         return false;
     }
 
-    Serial.print("Wi-Fi connected, IP: ");
+    Serial.print("Wi-Fi 已连接，IP: ");
     Serial.println(WiFi.localIP());
     return true;
 }
@@ -313,8 +364,8 @@ String NetworkManager::readRequestBody(httpd_req_t* req) const {
     char buffer[129];
 
     while (remaining > 0) {
-        const int received = httpd_req_recv(req, buffer, remaining < static_cast<int>(sizeof(buffer)) ? remaining :
-            static_cast<int>(sizeof(buffer) - 1));
+        const int received = httpd_req_recv(req, buffer, remaining < static_cast<int>(sizeof(buffer))
+            ? remaining : static_cast<int>(sizeof(buffer) - 1));
         if (received <= 0) {
             return String();
         }
@@ -376,28 +427,19 @@ String NetworkManager::buildDevicesResponse() const {
     doc["message"] = "ok";
     JsonArray devices = doc.createNestedArray("data");
 
-    appendSensorDevice(devices, "sensor-temp-001", "Air Temperature Sensor", "SENSOR",
-        "TEMPERATURE", latestSensorData.temperature, "C");
-    appendSensorDevice(devices, "sensor-humidity-001", "Air Humidity Sensor", "SENSOR",
-        "HUMIDITY", latestSensorData.humidity, "%");
-    appendSensorDevice(devices, "sensor-light-001", "Ambient Light Sensor", "LIGHT_SENSOR",
-        "LIGHT", latestSensorData.light, "lux");
-    appendSensorDevice(devices, "sensor-co2-001", "CO2 Sensor", "CO2_SENSOR",
-        "CO2", latestSensorData.eco2, "ppm");
-    appendSensorDevice(devices, "sensor-tvoc-001", "TVOC Sensor", "TVOC_SENSOR",
-        "TVOC", latestSensorData.tvoc, "ppb");
-    appendSensorDevice(devices, "sensor-soil-001", "Soil Moisture Sensor", "SOIL_SENSOR",
-        "SOIL_MOISTURE", latestSensorData.soilMoisture, "%");
-    appendSensorDevice(devices, "sensor-soil-temp-001", "Soil Temperature Sensor", "SOIL_SENSOR",
-        "SOIL_TEMPERATURE", latestSensorData.soilTemperature, "C");
-    appendSensorDevice(devices, "sensor-rain-001", "Rain Sensor", "RAIN_SENSOR",
-        "RAIN_DETECTED", latestSensorData.rainDetected ? 1.0f : 0.0f, "bool");
-    appendSensorDevice(devices, "sensor-motion-001", "Motion Sensor", "MOTION_SENSOR",
-        "MOTION_DETECTED", latestSensorData.motionDetected ? 1.0f : 0.0f, "bool");
+    appendSensorDevice(devices, "sensor-temp-001", "空气温度传感器", "SENSOR", "TEMPERATURE", latestSensorData.temperature, "C");
+    appendSensorDevice(devices, "sensor-humidity-001", "空气湿度传感器", "SENSOR", "HUMIDITY", latestSensorData.humidity, "%");
+    appendSensorDevice(devices, "sensor-light-001", "光照传感器", "LIGHT_SENSOR", "LIGHT", latestSensorData.light, "lux");
+    appendSensorDevice(devices, "sensor-co2-001", "二氧化碳传感器", "CO2_SENSOR", "CO2", latestSensorData.eco2, "ppm");
+    appendSensorDevice(devices, "sensor-tvoc-001", "TVOC 传感器", "TVOC_SENSOR", "TVOC", latestSensorData.tvoc, "ppb");
+    appendSensorDevice(devices, "sensor-soil-001", "土壤湿度传感器", "SOIL_SENSOR", "SOIL_MOISTURE", latestSensorData.soilMoisture, "%");
+    appendSensorDevice(devices, "sensor-soil-temp-001", "土壤温度传感器", "SOIL_SENSOR", "SOIL_TEMPERATURE", latestSensorData.soilTemperature, "C");
+    appendSensorDevice(devices, "sensor-rain-001", "雨滴传感器", "RAIN_SENSOR", "RAIN_DETECTED", latestSensorData.rainDetected ? 1.0f : 0.0f, "bool");
+    appendSensorDevice(devices, "sensor-motion-001", "人体红外传感器", "MOTION_SENSOR", "MOTION_DETECTED", latestSensorData.motionDetected ? 1.0f : 0.0f, "bool");
 
-    appendActuatorDevice(devices, PUMP_DEVICE_ID, "Irrigation Pump A1", "PUMP", true,
+    appendActuatorDevice(devices, PUMP_DEVICE_ID, "灌溉水泵 A1", "PUMP", true,
         actuatorState.pumpOn ? DEVICE_ON : DEVICE_OFF, actuatorState.pumpOn ? 1 : 0, false);
-    appendActuatorDevice(devices, GROW_LIGHT_DEVICE_ID, "Grow Light A1", "LIGHT", true,
+    appendActuatorDevice(devices, GROW_LIGHT_DEVICE_ID, "补光灯 A1", "LIGHT", true,
         actuatorState.growLightOn ? DEVICE_ON : DEVICE_OFF, actuatorState.growLightLevel, true);
 
     String payload;
@@ -484,11 +526,7 @@ void NetworkManager::appendActuatorDevice(JsonArray devices, const char* id, con
     device["type"] = type;
     device["online"] = online;
     device["status"] = statusText;
-    if (supportLevel) {
-        device["level"] = level;
-    } else {
-        device["level"] = statusText == DEVICE_ON ? 1 : 0;
-    }
+    device["level"] = supportLevel ? level : (statusText == DEVICE_ON ? 1 : 0);
     device["location"] = config.deviceLocation;
     device["updatedAt"] = createTimestamp();
 
@@ -676,86 +714,53 @@ void NetworkManager::broadcastWsMessage(const String& payload) {
 
 bool NetworkManager::handleDeviceCommand(const String& deviceId, const String& command, JsonVariant params,
     String& finalStatus, String& message) {
-    if (deviceId == PUMP_DEVICE_ID) {
-        if (command == "TURN_ON") {
-            int durationSec = DEFAULT_PUMP_DURATION_SEC;
-            if (!params.isNull() && params["durationSec"].is<int>()) {
-                durationSec = params["durationSec"].as<int>();
-            }
-            if (durationSec < 0) {
-                durationSec = 0;
-            }
-            if (durationSec > MAX_PUMP_DURATION_SEC) {
-                durationSec = MAX_PUMP_DURATION_SEC;
-            }
-
-            actuatorState.pumpOn = true;
-            actuatorState.pumpAutoOffAtMs = durationSec > 0 ? millis() + static_cast<unsigned long>(durationSec) * 1000UL : 0;
-            finalStatus = DEVICE_ON;
-            message = durationSec > 0 ? String("pump enabled for ") + String(durationSec) + "s" : "pump enabled";
-            return true;
-        }
-
-        if (command == "TURN_OFF") {
-            actuatorState.pumpOn = false;
-            actuatorState.pumpAutoOffAtMs = 0;
-            finalStatus = DEVICE_OFF;
-            message = "pump disabled";
-            return true;
-        }
-
-        finalStatus = actuatorState.pumpOn ? DEVICE_ON : DEVICE_OFF;
-        message = "unsupported pump command";
+    if (commandHandler == NULL) {
+        finalStatus = "UNAVAILABLE";
+        message = "device command handler not ready";
         return false;
+    }
+
+    int durationSec = DEFAULT_PUMP_DURATION_SEC;
+    bool hasDuration = false;
+    int level = DEFAULT_GROW_LIGHT_LEVEL;
+    bool hasLevel = false;
+
+    if (!params.isNull() && params["durationSec"].is<int>()) {
+        durationSec = params["durationSec"].as<int>();
+        hasDuration = true;
+    }
+    if (!params.isNull() && params["level"].is<int>()) {
+        level = params["level"].as<int>();
+        hasLevel = true;
+    }
+
+    if (durationSec < 0) {
+        durationSec = 0;
+    }
+    if (durationSec > MAX_PUMP_DURATION_SEC) {
+        durationSec = MAX_PUMP_DURATION_SEC;
+    }
+    level = constrain(level, 1, 5);
+
+    const bool accepted = commandHandler(deviceId, command, durationSec, hasDuration,
+        level, hasLevel, finalStatus, message);
+    if (!accepted) {
+        return false;
+    }
+
+    syncCommandState(deviceId, finalStatus, level);
+    return true;
+}
+
+void NetworkManager::syncCommandState(const String& deviceId, const String& finalStatus, int level) {
+    if (deviceId == PUMP_DEVICE_ID) {
+        actuatorState.pumpOn = finalStatus == DEVICE_ON;
+        return;
     }
 
     if (deviceId == GROW_LIGHT_DEVICE_ID) {
-        if (command == "TURN_ON") {
-            actuatorState.growLightOn = true;
-            if (actuatorState.growLightLevel <= 0) {
-                actuatorState.growLightLevel = DEFAULT_GROW_LIGHT_LEVEL;
-            }
-            finalStatus = DEVICE_ON;
-            message = "grow light enabled";
-            return true;
-        }
-
-        if (command == "TURN_OFF") {
-            actuatorState.growLightOn = false;
-            actuatorState.growLightLevel = 0;
-            finalStatus = DEVICE_OFF;
-            message = "grow light disabled";
-            return true;
-        }
-
-        if (command == "SET_LEVEL") {
-            int level = DEFAULT_GROW_LIGHT_LEVEL;
-            if (!params.isNull() && params["level"].is<int>()) {
-                level = params["level"].as<int>();
-            }
-            level = constrain(level, 1, 5);
-            actuatorState.growLightOn = true;
-            actuatorState.growLightLevel = level;
-            finalStatus = DEVICE_ON;
-            message = String("grow light level set to ") + String(level);
-            return true;
-        }
-
-        finalStatus = actuatorState.growLightOn ? DEVICE_ON : DEVICE_OFF;
-        message = "unsupported grow light command";
-        return false;
-    }
-
-    finalStatus = "UNKNOWN";
-    message = "device not found";
-    return false;
-}
-
-void NetworkManager::processAutoControl() {
-    if (actuatorState.pumpOn && actuatorState.pumpAutoOffAtMs > 0 && millis() >= actuatorState.pumpAutoOffAtMs) {
-        actuatorState.pumpOn = false;
-        actuatorState.pumpAutoOffAtMs = 0;
-        publishDeviceStatusChanged(PUMP_DEVICE_ID);
+        actuatorState.growLightOn = finalStatus == DEVICE_ON;
+        actuatorState.growLightLevel = actuatorState.growLightOn ? level : 0;
     }
 }
 
@@ -889,8 +894,8 @@ esp_err_t NetworkManager::handleWebSocket(httpd_req_t* req) {
                 JsonObject data = doc.createNestedObject("data");
                 data["gatewayId"] = manager.config.gatewayId;
                 data["online"] = manager.status == NET_CONNECTED;
-                data["lastHeartbeat"] = manager.lastHeartbeatIso.length() > 0 ?
-                    manager.lastHeartbeatIso : manager.createTimestamp();
+                data["lastHeartbeat"] = manager.lastHeartbeatIso.length() > 0
+                    ? manager.lastHeartbeatIso : manager.createTimestamp();
 
                 String payload;
                 serializeJson(doc, payload);

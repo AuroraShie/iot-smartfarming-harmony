@@ -1,4 +1,4 @@
-#ifndef NETWORK_MODULE_H
+﻿#ifndef NETWORK_MODULE_H
 #define NETWORK_MODULE_H
 
 #include <Arduino.h>
@@ -38,6 +38,10 @@ struct NetworkConfig {
     int gatewayPort;
 };
 
+using DeviceCommandHandler = bool (*)(const String& deviceId, const String& command,
+    int durationSec, bool hasDuration, int level, bool hasLevel,
+    String& finalStatus, String& message);
+
 class NetworkManager {
 private:
     struct CommandRecord {
@@ -55,7 +59,6 @@ private:
         bool pumpOn;
         bool growLightOn;
         int growLightLevel;
-        unsigned long pumpAutoOffAtMs;
     };
 
     NetworkStatus status;
@@ -71,6 +74,7 @@ private:
     httpd_handle_t serverHandle;
     ActuatorState actuatorState;
     CommandRecord commandHistory[MAX_COMMAND_HISTORY];
+    DeviceCommandHandler commandHandler;
 
     void configureTime();
     bool connectWiFi();
@@ -103,7 +107,7 @@ private:
     void broadcastWsMessage(const String& payload);
     bool handleDeviceCommand(const String& deviceId, const String& command, JsonVariant params,
         String& finalStatus, String& message);
-    void processAutoControl();
+    void syncCommandState(const String& deviceId, const String& finalStatus, int level);
     static NetworkManager& instance();
     static esp_err_t handleGatewayStatus(httpd_req_t* req);
     static esp_err_t handleRealtimeTelemetry(httpd_req_t* req);
@@ -118,6 +122,11 @@ public:
     void begin();
     void update();
     NetworkStatus getStatus() const;
+    String getLocalIp() const;
+    int getGatewayPort() const;
+    String getWebSocketPath() const;
+    bool isWebSocketEnabled() const;
+    bool isGatewayServing() const;
     bool sendSensorData(const SensorData& data);
     bool registerDevice();
     bool fetchGatewayStatus();
@@ -125,6 +134,8 @@ public:
         const String& result, const String& message);
     void disconnect();
     void reconnect();
+    void setCommandHandler(DeviceCommandHandler handler);
+    void updateActuatorState(bool pumpOn, bool growLightOn, int growLightLevel);
 };
 
 extern NetworkManager networkManager;
