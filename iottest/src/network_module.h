@@ -3,11 +3,10 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <esp_http_server.h>
 #include "config.h"
 
-// 网络状态枚举
 enum NetworkStatus {
     NET_DISCONNECTED = 0,
     NET_CONNECTING = 1,
@@ -15,81 +14,119 @@ enum NetworkStatus {
     NET_ERROR = 3
 };
 
-// 传感器数据结构
 struct SensorData {
-    float temperature;      // 温度 (°C)
-    float humidity;         // 湿度 (%)
-    int light;              // 光照强度
-    uint16_t tvoc;          // TVOC (ppb)
-    uint16_t eco2;          // eCO2 (ppm)
-    int soilMoisture;       // 土壤湿度 (%)
-    float soilTemperature;  // 土壤温度 (°C)
-    bool rainDetected;      // 雨滴检测
-    bool motionDetected;    // 运动检测
-    String timestamp;       // 时间戳
+    float temperature;
+    float humidity;
+    int light;
+    uint16_t tvoc;
+    uint16_t eco2;
+    int soilMoisture;
+    float soilTemperature;
+    bool rainDetected;
+    bool motionDetected;
+    String timestamp;
 };
 
-// 网络配置结构
 struct NetworkConfig {
     String ssid;
     String password;
-    String serverHost;
-    int serverPort;
-    String deviceId;
+    String gatewayId;
     String deviceName;
-    String deviceType;
     String deviceLocation;
+    String firmwareVersion;
+    String wsPath;
+    int gatewayPort;
 };
 
-// 网络管理器类
 class NetworkManager {
 private:
+    struct CommandRecord {
+        bool used;
+        String requestId;
+        String deviceId;
+        String result;
+        String finalStatus;
+        String message;
+        String timestamp;
+        unsigned long createdAtMs;
+    };
+
+    struct ActuatorState {
+        bool pumpOn;
+        bool growLightOn;
+        int growLightLevel;
+        unsigned long pumpAutoOffAtMs;
+    };
+
     NetworkStatus status;
     NetworkConfig config;
+    SensorData latestSensorData;
+    bool sensorDataReady;
     unsigned long lastConnectAttempt;
-    unsigned long lastDataSend;
-    int retryCount;
-    
-    // 内部方法
+    unsigned long bootTimeMs;
+    unsigned long lastHeartbeatMs;
+    unsigned long lastTelemetryPublishMs;
+    unsigned long messageSequence;
+    String lastHeartbeatIso;
+    httpd_handle_t serverHandle;
+    ActuatorState actuatorState;
+    CommandRecord commandHistory[MAX_COMMAND_HISTORY];
+
+    void configureTime();
     bool connectWiFi();
-    bool sendHttpRequest(const String& endpoint, const String& method, const String& payload = "");
-    String buildSensorJson(const SensorData& data);
-    String buildDeviceJson();
-    String getTimestamp();
-    
+    bool startServer();
+    void stopServer();
+    void refreshHeartbeat(bool forcePublish = false);
+    bool isServerRunning() const;
+    String createTimestamp() const;
+    String createMessageId();
+    String readRequestBody(httpd_req_t* req) const;
+    void sendJson(httpd_req_t* req, const String& payload, const char* status = "200 OK") const;
+    String buildGatewayStatusResponse() const;
+    String buildTelemetryResponse() const;
+    String buildDevicesResponse() const;
+    String buildCommandAcceptedResponse(const String& requestId, const String& deviceId, bool accepted,
+        const String& statusText, const String& message, int code) const;
+    String buildCommandQueryResponse(const CommandRecord& record) const;
+    void appendTelemetry(JsonObject data) const;
+    void appendSensorDevice(JsonArray devices, const char* id, const char* name, const char* type,
+        const char* metricType, float value, const char* unit) const;
+    void appendActuatorDevice(JsonArray devices, const char* id, const char* name, const char* type,
+        bool online, const String& statusText, int level, bool supportLevel) const;
+    int findCommandRecord(const String& requestId) const;
+    CommandRecord& writeCommandRecord(const String& requestId, const String& deviceId, const String& result,
+        const String& finalStatus, const String& message);
+    void publishTelemetryUpdate(bool force);
+    void publishGatewayStatusChanged();
+    void publishDeviceStatusChanged(const String& deviceId);
+    void publishCommandResult(const CommandRecord& record);
+    void broadcastWsMessage(const String& payload);
+    bool handleDeviceCommand(const String& deviceId, const String& command, JsonVariant params,
+        String& finalStatus, String& message);
+    void processAutoControl();
+    static NetworkManager& instance();
+    static esp_err_t handleGatewayStatus(httpd_req_t* req);
+    static esp_err_t handleRealtimeTelemetry(httpd_req_t* req);
+    static esp_err_t handleDevices(httpd_req_t* req);
+    static esp_err_t handleDeviceCommandRequest(httpd_req_t* req);
+    static esp_err_t handleCommandQuery(httpd_req_t* req);
+    static esp_err_t handleWebSocket(httpd_req_t* req);
+
 public:
     NetworkManager();
-    
-    // 初始化网络
+
     void begin();
-    
-    // 更新网络状态
     void update();
-    
-    // 获取网络状态
-    NetworkStatus getStatus();
-    
-    // 发送传感器数据
+    NetworkStatus getStatus() const;
     bool sendSensorData(const SensorData& data);
-    
-    // 注册设备
     bool registerDevice();
-    
-    // 获取网关状态
     bool fetchGatewayStatus();
-    
-    // 发送命令结果
-    bool sendCommandResult(const String& requestId, const String& deviceId, 
-                          const String& result, const String& message);
-    
-    // 断开连接
+    bool sendCommandResult(const String& requestId, const String& deviceId,
+        const String& result, const String& message);
     void disconnect();
-    
-    // 重连
     void reconnect();
 };
 
-// 全局网络管理器实例
 extern NetworkManager networkManager;
 
-#endif // NETWORK_MODULE_H
+#endif

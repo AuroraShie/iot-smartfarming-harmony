@@ -625,19 +625,19 @@ void loop() {
     }
     Serial.println();
 
-    // ==================== 网络数据传输 ====================
+    // ==================== 网络网关快照同步 ====================
     Serial.println("[网络传输]");
     
     if (networkManager.getStatus() == NET_CONNECTED) {
-        // 发送传感器数据到服务器
+        // 刷新本地网关中的最新传感器快照，并触发 WebSocket 推送
         bool sendResult = networkManager.sendSensorData(currentSensorData);
         if (sendResult) {
-            Serial.println("  ✓ 数据发送成功");
+            Serial.println("  ✓ 网关快照已更新");
         } else {
-            Serial.println("  ⚠ 数据发送失败或未到发送时间");
+            Serial.println("  ⚠ 网关快照更新失败");
         }
     } else {
-        Serial.println("  ⚠ 网络未连接，跳过数据发送");
+        Serial.println("  ⚠ 网络未连接，跳过网关快照更新");
     }
     Serial.println();
 
