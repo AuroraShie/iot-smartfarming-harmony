@@ -1,231 +1,434 @@
-# ESP32 多传感器环境监测系统
+# iottest - ESP32 本地网关与农业设备控制工程
 
-## 项目概述
+## 项目定位
 
-基于ESP32的模块化传感器数据采集系统，支持7种传感器，采用面向对象设计，具有统一接口规范，便于扩展和维护。
+`iottest` 是整个仓库中的 ESP32 设备端工程，当前已经不是早期单纯的“多传感器采集 demo”，而是一个面向 HarmonyOS 前端联调的本地农业网关。
 
-## 系统特性
+它负责：
 
-- ✅ **模块化架构**：每个传感器独立封装，易于维护
-- ✅ **统一接口规范**：面向对象API + C风格API双重支持
-- ✅ **RGB LED状态指示**：实时显示系统运行状态
-- ✅ **容错处理**：单个传感器故障不影响其他传感器
-- ✅ **预留扩展接口**：支持网络传输模块和执行器扩展
+- 采集环境与状态类传感器数据
+- 控制真实继电器执行器
+- 在局域网中启动 HTTP 网关
+- 提供 WebSocket 实时消息
+- 接收前端命令并返回执行结果
 
-## 支持的传感器
+当前版本重点是把“采集 + 网关 + 命令 + 执行器”链路做稳。
 
-| 传感器 | 类型 | 测量内容 | 接口方式 | GPIO |
-|--------|------|----------|----------|------|
-| DHT11 | 温湿度传感器 | 温度、湿度 | 单总线数字 | GPIO4 |
-| SGP30 | 空气质量传感器 | TVOC、eCO2 | I2C | GPIO18(SDA), GPIO19(SCL) |
-| HW-390 | 土壤湿度传感器 | 土壤湿度百分比 | 模拟ADC | GPIO34 |
-| MH-RD | 雨滴传感器 | 雨滴检测 | 数字输入 | GPIO13 |
-| DS18B20 | 温度传感器 | 土壤温度 | 1-Wire总线（双传感器） | GPIO5, GPIO21 |
-| HC-SR501 | 红外人体传感器 | 人体运动检测 | 数字输入 | GPIO12 |
-| 光敏传感器 | 光照强度传感器 | 光线检测 | 数字输入 | GPIO32 |
+## 当前能力
 
-## 硬件引脚连接
+### 传感器采集
 
-### 快速参考
+已接入：
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     ESP32 Dev Board                      │
-├─────────────────────────────────────────────────────────┤
-│  GPIO4  ──── DHT11 (温湿度)                              │
-│  GPIO18 ──── SGP30 SDA (空气质量)                        │
-│  GPIO19 ──── SGP30 SCL                                   │
-│  GPIO34 ──── HW-390 (土壤湿度)                           │
-│  GPIO13 ──── MH-RD (雨滴检测)                            │
-│  GPIO5  ──── DS18B20 #1 (温度传感器1)                    │
-│  GPIO21 ──── DS18B20 #2 (温度传感器2)                    │
-│  GPIO12 ──── HC-SR501 (人体检测)                         │
-│  GPIO32 ──── 光敏传感器 (光照检测)                        │
-│  GPIO2  ──── 板载LED                                     │
-│  GPIO25 ──── RGB LED (红色)                              │
-│  GPIO26 ──── RGB LED (绿色)                              │
-└─────────────────────────────────────────────────────────┘
-```
+- DHT11：空气温度、空气湿度
+- SGP30：TVOC、eCO2
+- HW-390：土壤湿度
+- DS18B20 x2：土壤温度
+- MH-RD：雨滴检测
+- HC-SR501：人体红外检测
+- 光敏传感器：明暗状态检测
 
-### 详细接线说明
+### 执行器控制
 
-#### DS18B20 双温度传感器
-```
-传感器1 (GPIO5):                传感器2 (GPIO21):
-VCC ── 3.3V/5V                  VCC ── 3.3V/5V
-GND ── GND                      GND ── GND
-DATA ── GPIO5                   DATA ── GPIO21
-      │                               │
-      └── 4.7KΩ上拉电阻               └── 4.7KΩ上拉电阻
-```
+已接入：
 
-**注意**：两个传感器使用独立的1-Wire总线，DATA线不并联。
+- `pump-001`：水泵继电器
+- `growlight-001`：补光继电器
 
-## RGB LED 状态指示
+### 网络网关
 
-| LED颜色 | 状态说明 |
-|---------|----------|
-| 🟢 绿色 | 所有传感器正常，环境条件良好 |
-| 🟡 黄色 | 环境异常（无光照或土壤干燥） |
-| 🔴 红色 | 传感器故障 |
-| ⬛ 关闭 | 系统初始化未完成 |
+当前提供：
 
-## 目录结构
+- `GET /gateway/status`
+- `GET /telemetry/realtime`
+- `GET /devices`
+- `POST /devices/{id}/command`
+- `GET /commands/{requestId}`
+- `ws://<esp-ip>:8080/ws`
 
-```
-src/
-├── main.cpp              # 主程序（控制逻辑）
-├── config.h              # 配置文件（针脚定义和参数）
-├── dht11_sensor.h/cpp    # DHT11温湿度传感器
-├── sgp30_sensor.h/cpp    # SGP30空气质量传感器
-├── hw390_sensor.h/cpp    # HW-390土壤湿度传感器
-├── ds18b20_sensor.h/cpp  # DS18B20温度传感器
-├── rain_sensor.h/cpp     # MH-RD雨滴传感器
-├── pir_sensor.h/cpp      # HC-SR501人体传感器
-└── light_sensor.h/cpp    # 光敏传感器
+### WebSocket 推送主题
+
+- `telemetry.update`
+- `gateway.status.changed`
+- `device.status.changed`
+- `command.result`
+
+## 当前目录结构
+
+```text
+iottest
+├─ platformio.ini
+├─ README.md
+├─ 扩展计划.md
+└─ src
+   ├─ main.cpp
+   ├─ config.h
+   ├─ network_module.h / .cpp
+   ├─ pump_controller.h / .cpp
+   ├─ grow_light_controller.h / .cpp
+   ├─ dht11_sensor.h / .cpp
+   ├─ sgp30_sensor.h / .cpp
+   ├─ hw390_sensor.h / .cpp
+   ├─ ds18b20_sensor.h / .cpp
+   ├─ rain_sensor.h / .cpp
+   ├─ pir_sensor.h / .cpp
+   └─ light_sensor.h / .cpp
 ```
 
-## 使用说明
+## 代码结构说明
 
-### 编译和上传
-```bash
-# 编译项目
+### `main.cpp`
+
+负责：
+
+- 串口初始化
+- 传感器初始化
+- RGB 状态灯初始化
+- 执行器初始化
+- 周期性读取传感器
+- 汇总本轮快照
+- 调用网络模块同步网关数据
+- 注册网关命令处理函数
+
+当前原则是：`main.cpp` 只做初始化、调度、汇总和命令落地，不在里面堆复杂网络协议细节。
+
+### `network_module.h/.cpp`
+
+负责：
+
+- Wi-Fi 连接与重连
+- 本地 HTTP 服务
+- WebSocket 推送
+- 网关心跳与时间戳生成
+- 设备列表组装
+- 命令请求解析
+- 命令历史缓存
+- 执行结果与状态广播
+
+这个模块是 HarmonyOS 前端和 ESP32 之间的协议适配核心。
+
+### `pump_controller.h/.cpp`
+
+负责：
+
+- 水泵继电器初始化
+- 开关控制
+- 定时自动关泵
+
+### `grow_light_controller.h/.cpp`
+
+负责：
+
+- 补光继电器初始化
+- 开关控制
+- 档位记录
+
+注意：当前“档位”是业务层记录值，不代表真实 PWM 调光。
+
+### 各传感器模块
+
+每种硬件一个独立模块，便于：
+
+- 更换具体型号
+- 独立排错
+- 后续继续扩展
+
+## 当前硬件引脚
+
+### 传感器
+
+| 模块 | 引脚 |
+|---|---|
+| DHT11 | `GPIO4` |
+| SGP30 SDA/SCL | `GPIO18` / `GPIO19` |
+| HW-390 | `GPIO34` |
+| DS18B20 #1 | `GPIO5` |
+| DS18B20 #2 | `GPIO21` |
+| MH-RD | `GPIO13` |
+| HC-SR501 | `GPIO12` |
+| 光敏传感器 | `GPIO32` |
+
+### 指示与执行器
+
+| 模块 | 引脚 | 说明 |
+|---|---|---|
+| 板载指示灯 | `GPIO2` | 明暗状态提示 |
+| RGB 红灯 | `GPIO25` | 状态灯 |
+| RGB 绿灯 | `GPIO26` | 状态灯 |
+| 水泵继电器 | `GPIO27` | 低电平触发 |
+| 补光继电器 | `GPIO33` | 低电平触发 |
+
+## 当前配置说明
+
+配置集中在 `src/config.h`。
+
+重点配置项包括：
+
+- 串口波特率：`SERIAL_BAUD_RATE`
+- 传感器引脚
+- 执行器引脚
+- `WIFI_SSID`
+- `WIFI_PASSWORD`
+- `GATEWAY_ID`
+- `GATEWAY_PORT`
+- `GATEWAY_WS_PATH`
+- `TELEMETRY_PUSH_INTERVAL_MS`
+- `DEFAULT_PUMP_DURATION_SEC`
+- `DEFAULT_GROW_LIGHT_LEVEL`
+
+建议在上板前先检查：
+
+- Wi-Fi 是否为可连接的 2.4G 网络
+- `upload_port` 是否与当前开发板串口一致
+- 继电器是否确实为低电平触发
+
+## 编译与烧录
+
+### 环境要求
+
+- VSCode
+- PlatformIO
+- ESP32 开发板串口驱动
+
+### 依赖库
+
+当前 `platformio.ini` 已配置：
+
+- `adafruit/DHT sensor library`
+- `adafruit/Adafruit Unified Sensor`
+- `adafruit/Adafruit SGP30 Sensor`
+- `paulstoffregen/OneWire`
+- `milesburton/DallasTemperature`
+- `bblanchon/ArduinoJson`
+- `links2004/WebSockets`
+
+### 常用命令
+
+在 `iottest` 目录执行：
+
+```powershell
 pio run
-
-# 上传到设备
-pio run --target upload
-
-# 监控串口输出
+pio run -t upload
 pio device monitor
 ```
 
-### 串口输出示例
+## 启动后的预期行为
 
-```
-==================================
-ESP32 多传感器系统（模块化架构）
-==================================
+### 串口启动阶段
 
-正在初始化传感器...
-✓ DHT11 初始化成功
-✓ SGP30 初始化成功
-✓ HW-390 初始化成功
-✓ MH-RD 雨滴传感器 初始化成功
-✓ DS18B20 传感器1 初始化成功
-✓ DS18B20 传感器2 初始化成功
-✓ HC-SR501 初始化成功
-✓ 光敏传感器 初始化成功
-✓ RGB LED 初始化完成
+你应看到：
 
-==================================
-系统就绪，开始读取数据...
-==================================
+- 各传感器初始化结果
+- 板载指示灯初始化
+- RGB 状态灯初始化
+- 执行器引脚初始化
+- Wi-Fi 连接状态
+- 网关服务地址
 
-----------------------------------
-运行时间: 1 秒
+典型输出类似：
 
-[传感器: DHT11]
-  湿度: 40.00 %
-  温度: 27.50 °C
-  状态: ✓ 正常
+```text
+ESP32 多传感器环境监测系统
+版本: 3.0 (本地网关 + 继电器执行器版本)
 
-[传感器: DS18B20]
-  传感器1温度: 23.2 °C
-  传感器2温度: 23.8 °C
-  平均温度: 23.5 °C
-  状态: ✓ 正常
-
-[RGB LED] 绿色 - 所有传感器正常
+Wi-Fi 已连接，IP: 192.168.x.x
+Gateway is serving at http://192.168.x.x:8080
 ```
 
-## 配置修改
+### 运行阶段
 
-编辑 `config.h` 修改配置：
+系统会按 `SENSOR_READ_INTERVAL` 周期：
 
-```c
-// 修改读取间隔（毫秒）
-#define SENSOR_READ_INTERVAL 2000
+- 读取全部传感器
+- 打印本轮状态
+- 更新 RGB 状态灯
+- 同步最新快照到本地网关
 
-// 修改DS18B20引脚
-#define DS18B20_PIN_1 5
-#define DS18B20_PIN_2 21
+### RGB 状态灯逻辑
 
-// 修改RGB LED亮度
-#define BRIGHTNESS_RED    255
-#define BRIGHTNESS_GREEN  255
+- 绿色：本轮全部传感器正常
+- 黄色：存在环境异常，例如土壤偏干或环境偏暗
+- 红色：存在传感器故障
+
+## 接口说明
+
+### `GET /gateway/status`
+
+返回：
+
+- 网关 ID
+- 在线状态
+- 最后心跳
+- 固件版本
+- Wi-Fi 信息
+- 运行时长
+
+### `GET /telemetry/realtime`
+
+返回当前快照，包括：
+
+- 温度
+- 湿度
+- 光照
+- CO2 / eCO2
+- TVOC
+- 土壤湿度
+- 土壤温度
+- 雨滴检测
+- 人体活动检测
+- 时间戳
+
+### `GET /devices`
+
+返回：
+
+- 9 个传感器类设备项
+- 2 个执行器设备项
+
+并对齐 HarmonyOS 当前消费字段：
+
+- `id`
+- `gatewayId`
+- `name`
+- `type`
+- `online`
+- `status`
+- `location`
+- `capabilities`
+- `telemetry.metricType/value/unit/timestamp`
+
+### `POST /devices/{id}/command`
+
+当前支持：
+
+#### 水泵 `pump-001`
+
+- `TURN_ON`
+- `TURN_OFF`
+
+可选参数：
+
+- `durationSec`
+
+#### 补光 `growlight-001`
+
+- `TURN_ON`
+- `TURN_OFF`
+- `SET_LEVEL`
+
+可选参数：
+
+- `level`
+
+### `GET /commands/{requestId}`
+
+用于查询命令执行结果，返回：
+
+- `requestId`
+- `deviceId`
+- `result`
+- `finalStatus`
+- `message`
+- `timestamp`
+
+## WebSocket 实时消息
+
+路径：
+
+```text
+ws://<esp-ip>:8080/ws
 ```
 
-## 库依赖
+### 当前主题
 
-- DHT sensor library
-- Adafruit Unified Sensor
-- Adafruit SGP30 Sensor
-- OneWire (paulstoffregen)
-- DallasTemperature (milesburton)
+- `telemetry.update`
+- `gateway.status.changed`
+- `device.status.changed`
+- `command.result`
 
-（已在 `platformio.ini` 中配置）
+### 用途
 
-## 扩展功能
+- 推送最新遥测
+- 推送网关心跳更新
+- 推送设备状态变化
+- 推送命令最终结果
 
-系统预留了扩展接口，支持以下功能：
+## 与 HarmonyOS 的兼容约定
 
-1. **网络传输模块**：WiFi/MQTT数据上传
-2. **自动控制系统**：继电器控制水泵、LED补光灯
-3. **数据存储**：SD卡本地存储或云端存储
+当前 IoT 端已经按 HarmonyOS 前端现有接口对齐，后续开发尽量遵守以下约定：
 
-详细扩展方案请参考 [扩展计划.md](扩展计划.md)
+- 不随意改动 `pump-001`、`growlight-001`
+- 不随意改动 `/devices` 中 `telemetry.metricType/value/unit/timestamp` 结构
+- `device.status.changed` 的 `data` 维持数组结构
+- 默认端口保持 `8080`
+- 默认 WebSocket 路径保持 `/ws`
 
-## 系统架构
+## 当前实现亮点
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    主程序 (main.cpp)                     │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │              setup() - 初始化                    │   │
-│  │  • 串口初始化                                    │   │
-│  │  • 传感器初始化                                  │   │
-│  │  • RGB LED初始化                                │   │
-│  └─────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │              loop() - 主循环                     │   │
-│  │  • 传感器数据读取                                │   │
-│  │  • 数据处理与显示                                │   │
-│  │  • RGB LED状态控制                              │   │
-│  │  • [预留] 网络数据传输                          │   │
-│  │  • [预留] 自动控制逻辑                          │   │
-│  └─────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────┐
-│              传感器模块 (各 sensor.h/cpp)                │
-│  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐     │
-│  │DHT11│ │SGP30│ │HW390│ │DS18B│ │Rain │ │ PIR │     │
-│  └─────┘ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘     │
-└─────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────┐
-│              配置文件 (config.h)                         │
-│  • 引脚定义                                            │
-│  • 系统参数                                            │
-│  • 传感器配置                                          │
-└─────────────────────────────────────────────────────────┘
-```
+### 1. 本地网关化
 
-## 版本信息
+ESP32 直接作为局域网网关工作，而不是向外部服务上报后再转发。
 
-- **当前版本**：2.3（网络扩展预留版本）
-- **更新内容**：
-  - ✅ 主程序代码重构，结构更清晰
-  - ✅ 预留网络传输模块接口
-  - ✅ 预留自动控制逻辑接口
-  - ✅ 优化代码注释和文档
+### 2. 执行器独立模块化
 
-## 许可证
+水泵和补光控制已经从网络层中拆出，避免“只改状态、不驱动硬件”的假控制。
 
-MIT License
+### 3. 命令闭环完整
 
-## 作者
+已经形成：
 
-IoT Environment Monitor Project
+- 前端提交命令
+- ESP32 接收并执行
+- 本地记录命令结果
+- HTTP 查询结果
+- WebSocket 推送结果
+
+### 4. 结构便于继续扩展
+
+后续可继续增加：
+
+- 自动灌溉
+- 自动补光
+- 更准确的光照传感器
+- 更多执行器
+
+## 运行与联调建议
+
+### 真实硬件联调建议顺序
+
+1. 先看串口是否正常启动
+2. 再测 `/gateway/status`
+3. 再测 `/telemetry/realtime`
+4. 再测 `/devices`
+5. 再测命令接口
+6. 最后连接 HarmonyOS 前端
+
+### HarmonyOS 配置建议
+
+- `host = ESP32 局域网 IP`
+- `port = 8080`
+- `protocol = HTTP_WS`
+- `wsPath = /ws`
+
+## 当前限制与待完善项
+
+- 光照值当前仍为映射值，不是真实 lux
+- 自动控制逻辑默认关闭
+- 上板后的长期稳定性还需要更多实测
+- 补光档位当前仅作业务记录，不是物理调光
+
+## 后续开发规则
+
+- 新增硬件继续保持“一个模块一对 `.h/.cpp`”
+- 不要把执行器状态回写成网络层里的假状态
+- `main.cpp` 继续保持轻量，只做调度和汇总
+- 所有 GPIO、时间参数、默认值统一进 `config.h`
+
+## 相关说明
+
+- 项目总览请看仓库根目录 `README.md`
+- 早期扩展思路和历史方案请看 `扩展计划.md`
+
+## 一句话总结
+
+当前 `iottest` 已经是一个可直接为 HarmonyOS 前端提供服务的 ESP32 农业网关工程，重点价值不再是“采多少种传感器”，而是“传感器、接口、命令和真实继电器控制已经能形成闭环”。
