@@ -281,7 +281,10 @@ bool NetworkManager::startServer() {
     devicesUri.handler = NetworkManager::handleDevices;
 
     httpd_uri_t commandUri = {};
-    commandUri.uri = "/devices/*/command";
+    // esp_http_server wildcard matching only supports suffix-style patterns.
+    // Register the POST handler on "/devices/*" and validate the full
+    // "/devices/{id}/command" shape inside handleDeviceCommandRequest().
+    commandUri.uri = "/devices/*";
     commandUri.method = HTTP_POST;
     commandUri.handler = NetworkManager::handleDeviceCommandRequest;
 
