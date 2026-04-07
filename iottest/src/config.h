@@ -19,7 +19,7 @@
 #define DS18B20_PIN_1 5
 #define DS18B20_PIN_2 21
 #define DS18B20_ADDRESS 0x28
-#define PIR_PIN 12
+#define PIR_PIN 14
 #define LIGHT_SENSOR_PIN 32
 
 // ==================== 本地指示灯配置 ====================
@@ -45,9 +45,13 @@
 #define BRIGHTNESS_YELLOW_GREEN 50
 
 // ==================== 系统配置 ====================
-#define SENSOR_READ_INTERVAL 2000
+#define SENSOR_READ_INTERVAL 1000
 #define I2C_SCAN_ENABLED false
 #define AUTO_CONTROL_ENABLED false
+#define SOIL_SENSOR_SAMPLE_COUNT 5
+#define SOIL_SENSOR_PUMP_SETTLE_MS 2000
+#define SOIL_SENSOR_MAX_STEP_DURING_PUMP 2
+#define RAIN_SENSOR_SAMPLE_COUNT 5
 
 // ==================== Wi-Fi 配置 ====================
 #define WIFI_SSID "Aurora-iPhone"
@@ -65,7 +69,7 @@
 #define GATEWAY_FIRMWARE_VERSION "1.2.0"
 
 // ==================== 网络推送配置 ====================
-#define TELEMETRY_PUSH_INTERVAL_MS 2000
+#define TELEMETRY_PUSH_INTERVAL_MS 1000
 #define HEARTBEAT_INTERVAL_MS 15000
 #define COMMAND_IDEMPOTENT_WINDOW_MS 30000
 #define MAX_COMMAND_HISTORY 12

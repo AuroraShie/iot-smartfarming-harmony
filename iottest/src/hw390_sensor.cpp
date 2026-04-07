@@ -49,7 +49,30 @@ HW390Sensor::HW390Sensor(int analogPin) : pin(analogPin) {
  * @return true表示读取成功，false表示失败
  */
 bool HW390Sensor::readData() {
-    rawValue = analogRead(pin);
+    long sampleSum = 0;
+    int minValue = 4095;
+    int maxValue = 0;
+
+    for (int i = 0; i < SOIL_SENSOR_SAMPLE_COUNT; ++i) {
+        const int sample = analogRead(pin);
+        sampleSum += sample;
+        if (sample < minValue) {
+            minValue = sample;
+        }
+        if (sample > maxValue) {
+            maxValue = sample;
+        }
+        delay(2);
+    }
+
+    if (SOIL_SENSOR_SAMPLE_COUNT >= 3) {
+        sampleSum -= minValue;
+        sampleSum -= maxValue;
+        rawValue = static_cast<int>(sampleSum / (SOIL_SENSOR_SAMPLE_COUNT - 2));
+    } else {
+        rawValue = static_cast<int>(sampleSum / SOIL_SENSOR_SAMPLE_COUNT);
+    }
+
     percentage = convertToPercentage(rawValue);
     return isValidReading();
 }

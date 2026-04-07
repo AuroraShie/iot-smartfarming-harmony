@@ -17,7 +17,7 @@ RainSensor::RainSensor(int digitalPin) : pin(digitalPin) {
  * @return Always returns RAIN_SENSOR_OK
  */
 bool RainSensor::begin() {
-    pinMode(pin, INPUT);
+    pinMode(pin, INPUT_PULLUP);
     
     // Initial read
     readData();
@@ -76,6 +76,13 @@ void RainSensor::printDebugInfo() const {
  * @brief Update internal reading (private method)
  */
 void RainSensor::updateReading() {
-    int digitalValue = digitalRead(pin);
-    rainDetected = (digitalValue == LOW);
+    int lowCount = 0;
+    for (int i = 0; i < RAIN_SENSOR_SAMPLE_COUNT; ++i) {
+        if (digitalRead(pin) == LOW) {
+            lowCount++;
+        }
+        delay(2);
+    }
+
+    rainDetected = lowCount > (RAIN_SENSOR_SAMPLE_COUNT / 2);
 }

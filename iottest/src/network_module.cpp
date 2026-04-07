@@ -14,6 +14,13 @@ const char* DEVICE_ON = "ON";
 const char* DEVICE_OFF = "OFF";
 const time_t MIN_VALID_EPOCH = 1700000000;
 const time_t FALLBACK_EPOCH = 1704067200;
+
+struct QueuedWsBroadcast {
+    httpd_handle_t serverHandle;
+    size_t fdCount;
+    int clientFds[MAX_WS_CLIENTS];
+    String payload;
+};
 }
 
 NetworkManager::NetworkManager()
@@ -701,17 +708,53 @@ void NetworkManager::broadcastWsMessage(const String& payload) {
 
     for (size_t i = 0; i < fdCount; ++i) {
         if (httpd_ws_get_fd_info(serverHandle, clientFds[i]) != HTTPD_WS_CLIENT_WEBSOCKET) {
+            clientFds[i] = -1;
+        }
+    }
+
+    QueuedWsBroadcast* job = new QueuedWsBroadcast;
+    if (job == NULL) {
+        return;
+    }
+
+    job->serverHandle = serverHandle;
+    job->fdCount = fdCount;
+    job->payload = payload;
+    for (size_t i = 0; i < fdCount; ++i) {
+        job->clientFds[i] = clientFds[i];
+    }
+
+    const esp_err_t queueResult = httpd_queue_work(serverHandle, processQueuedWsBroadcast, job);
+    if (queueResult != ESP_OK) {
+        delete job;
+    }
+#else
+    (void)payload;
+#endif
+}
+
+void NetworkManager::processQueuedWsBroadcast(void* arg) {
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    QueuedWsBroadcast* job = static_cast<QueuedWsBroadcast*>(arg);
+    if (job == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; i < job->fdCount; ++i) {
+        if (job->clientFds[i] < 0) {
             continue;
         }
 
         httpd_ws_frame_t frame = {};
         frame.type = HTTPD_WS_TYPE_TEXT;
-        frame.payload = reinterpret_cast<uint8_t*>(const_cast<char*>(payload.c_str()));
-        frame.len = payload.length();
-        httpd_ws_send_data(serverHandle, clientFds[i], &frame);
+        frame.payload = reinterpret_cast<uint8_t*>(const_cast<char*>(job->payload.c_str()));
+        frame.len = job->payload.length();
+        httpd_ws_send_frame_async(job->serverHandle, job->clientFds[i], &frame);
     }
+
+    delete job;
 #else
-    (void)payload;
+    (void)arg;
 #endif
 }
 

@@ -9,6 +9,7 @@
  */
 
 #include <Arduino.h>
+#include <esp_system.h>
 
 #include "config.h"
 #include "dht11_sensor.h"
@@ -33,6 +34,35 @@ struct ReadSummary {
     bool anySensorFailed;
     bool hasAbnormalCondition;
 };
+
+const char* toResetReasonText(esp_reset_reason_t reason) {
+    switch (reason) {
+        case ESP_RST_UNKNOWN:
+            return "UNKNOWN";
+        case ESP_RST_POWERON:
+            return "POWERON";
+        case ESP_RST_EXT:
+            return "EXTERNAL_RESET";
+        case ESP_RST_SW:
+            return "SOFTWARE_RESET";
+        case ESP_RST_PANIC:
+            return "PANIC";
+        case ESP_RST_INT_WDT:
+            return "INT_WDT";
+        case ESP_RST_TASK_WDT:
+            return "TASK_WDT";
+        case ESP_RST_WDT:
+            return "OTHER_WDT";
+        case ESP_RST_DEEPSLEEP:
+            return "DEEPSLEEP_WAKE";
+        case ESP_RST_BROWNOUT:
+            return "BROWNOUT";
+        case ESP_RST_SDIO:
+            return "SDIO";
+        default:
+            return "UNRECOGNIZED";
+    }
+}
 }
 
 bool dht11Available = false;
@@ -55,10 +85,27 @@ float ds18b20AvgTemperature = 0.0f;
 bool ds18b20AvgValid = false;
 SensorData currentSensorData;
 unsigned long lastSensorReadMs = 0;
+int lastStableSoilMoisture = -1;
+bool lastPumpStateForMoisture = false;
+unsigned long lastPumpStateChangeMs = 0;
 
 bool handleGatewayCommand(const String& deviceId, const String& command,
     int durationSec, bool hasDuration, int level, bool hasLevel,
     String& finalStatus, String& message);
+
+void printBootDiagnostics() {
+    const esp_reset_reason_t resetReason = esp_reset_reason();
+    Serial.printf("启动原因: %s (%d)\n", toResetReasonText(resetReason), static_cast<int>(resetReason));
+    Serial.printf("启动时可用堆内存: %u bytes\n", ESP.getFreeHeap());
+
+    if (resetReason == ESP_RST_BROWNOUT) {
+        Serial.println("警告: 检测到 Brownout，优先检查补光灯/继电器供电是否与 ESP32 产生压降或干扰。");
+    }
+
+    if (PIR_PIN == 12) {
+        Serial.println("警告: PIR 当前接在 GPIO12。GPIO12 是 ESP32 启动配置脚，复位时被外部拉高可能导致异常启动。");
+    }
+}
 
 void setupRGB() {
     ledcSetup(LEDC_CHANNEL_RED, LEDC_FREQUENCY, LEDC_RESOLUTION);
@@ -341,7 +388,28 @@ void readSoilMoistureData(ReadSummary& summary) {
     Serial.println("[传感器 HW-390]");
 
     if (hw390Available && hw390Sensor.readData()) {
-        const int moisture = hw390Sensor.getPercentage();
+        int moisture = hw390Sensor.getPercentage();
+        const bool pumpOn = pumpController.isOn();
+        const unsigned long nowMs = millis();
+
+        if (pumpOn != lastPumpStateForMoisture) {
+            lastPumpStateForMoisture = pumpOn;
+            lastPumpStateChangeMs = nowMs;
+        }
+
+        if (lastStableSoilMoisture >= 0) {
+            const bool inPumpNoiseWindow = pumpOn
+                || (nowMs - lastPumpStateChangeMs < SOIL_SENSOR_PUMP_SETTLE_MS);
+            const int delta = moisture - lastStableSoilMoisture;
+
+            if (inPumpNoiseWindow && abs(delta) > SOIL_SENSOR_MAX_STEP_DURING_PUMP) {
+                moisture = delta > 0
+                    ? lastStableSoilMoisture + SOIL_SENSOR_MAX_STEP_DURING_PUMP
+                    : lastStableSoilMoisture - SOIL_SENSOR_MAX_STEP_DURING_PUMP;
+            }
+        }
+
+        lastStableSoilMoisture = moisture;
         Serial.print("  土壤湿度: ");
         Serial.print(moisture);
         Serial.println(" %");
@@ -593,6 +661,15 @@ void handleLoopTasks() {
 bool handleGatewayCommand(const String& deviceId, const String& command,
     int durationSec, bool hasDuration, int level, bool hasLevel,
     String& finalStatus, String& message) {
+    Serial.printf("[命令] device=%s command=%s duration=%d hasDuration=%s level=%d hasLevel=%s freeHeap=%u\n",
+        deviceId.c_str(),
+        command.c_str(),
+        durationSec,
+        hasDuration ? "true" : "false",
+        level,
+        hasLevel ? "true" : "false",
+        ESP.getFreeHeap());
+
     if (deviceId == PUMP_DEVICE_ID) {
         if (command == "TURN_ON") {
             const uint32_t safeDuration = hasDuration
@@ -644,6 +721,12 @@ bool handleGatewayCommand(const String& deviceId, const String& command,
         pumpController.isOn(),
         growLightController.isOn(),
         growLightController.getLevel());
+    Serial.printf("[命令完成] device=%s finalStatus=%s growLightOn=%s pumpOn=%s freeHeap=%u\n",
+        deviceId.c_str(),
+        finalStatus.c_str(),
+        growLightController.isOn() ? "true" : "false",
+        pumpController.isOn() ? "true" : "false",
+        ESP.getFreeHeap());
     return true;
 }
 
@@ -655,6 +738,8 @@ void setup() {
     Serial.println("ESP32 多传感器环境监测系统");
     Serial.println("版本: 3.0 (本地网关 + 继电器执行器版本)");
     Serial.println("==================================");
+    Serial.println();
+    printBootDiagnostics();
     Serial.println();
 
     resetSensorData();

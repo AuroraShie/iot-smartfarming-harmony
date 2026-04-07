@@ -105,6 +105,7 @@ private:
     void publishDeviceStatusChanged(const String& deviceId);
     void publishCommandResult(const CommandRecord& record);
     void broadcastWsMessage(const String& payload);
+    static void processQueuedWsBroadcast(void* arg);
     bool handleDeviceCommand(const String& deviceId, const String& command, JsonVariant params,
         String& finalStatus, String& message);
     void syncCommandState(const String& deviceId, const String& finalStatus, int level);

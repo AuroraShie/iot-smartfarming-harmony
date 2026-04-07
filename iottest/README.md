@@ -145,7 +145,7 @@ iottest
 | DS18B20 #1 | `GPIO5` |
 | DS18B20 #2 | `GPIO21` |
 | MH-RD | `GPIO13` |
-| HC-SR501 | `GPIO12` |
+| HC-SR501 | `GPIO14` |
 | 光敏传感器 | `GPIO32` |
 
 ### 指示与执行器
